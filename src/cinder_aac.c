@@ -11,8 +11,12 @@
  * LDAC and aptX when choosing), so it needs no change. What is missing is above it:
  *
  *   1. No AAC source endpoint is ever registered. The list has room for four, all taken (SBC,
- *      LDAC, aptX HD, aptX). We put AAC in aptX HD's place.      -> sep_default_setting_initialized
- *   2. mtkbt only picks AAC while its AAC switch is on. We keep it on. -> send_aac_enable_req
+ *      LDAC, aptX HD, aptX). AAC and aptX HD take turns in aptX HD's slot: the list is built
+ *      afresh each time Bluetooth starts, and AAC goes in unless /data/cinder/bt_aptxhd (Cinder:
+ *      "aptX HD is the choice") says to leave aptX HD there.    -> sep_default_setting_initialized
+ *   2. mtkbt only picks AAC while its AAC switch is on. While AAC holds the slot, Sony's aptX HD
+ *      switch drives it instead (AAC has no transmit switch of its own), so Cinder's codec choice
+ *      reaches AAC through SetAptxHD.           -> send_aptxHD_enable_req, send_aac_enable_req
  *   3. libBtMw forwards PCM only for SBC, LDAC and aptX; for any other codec it drops it. So when
  *      the link comes up AAC, libBtMw is told it is SBC at the same rate, and its SBC calls (encoder
  *      start/stop, PCM) land here and are answered with AAC.     -> bt_av_callbacks' codec config
@@ -22,7 +26,9 @@
  * front of it; each forwards to blueangel's own copy whenever AAC is not in play.
  *
  * Off unless /data/cinder/bt_aac exists when the service starts. With the file absent every hook
- * is a straight pass-through.
+ * is a straight pass-through. /tmp/cinder_aac_codecs says what this boot offers ("aac", "sbc-xq",
+ * one a line) and, once Bluetooth has started, what holds the shared slot ("slot aac" or
+ * "slot aptxhd"), for Cinder's Bluetooth screen.
  *
  * SBC XQ, separately, with /data/cinder/bt_sbc_xq: the SBC endpoint offers Dual Channel only, at
  * up to bitpool 47. mtkbt takes the first channel mode both sides share (joint stereo first), so
@@ -39,6 +45,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -49,8 +56,10 @@
 #endif
 static const char kOn[] = CINDER_AAC_DIR "/bt_aac";
 static const char kXq[] = CINDER_AAC_DIR "/bt_sbc_xq";
+static const char kHd[] = CINDER_AAC_DIR "/bt_aptxhd";
 static const char kLog[] = "/tmp/cinder_aac.log";
 static const char kStatus[] = "/tmp/cinder_aac_status";
+static const char kCodecs[] = "/tmp/cinder_aac_codecs";
 
 #define EXPORT __attribute__((visibility("default")))
 
@@ -92,7 +101,7 @@ static void logf_(const char* fmt, ...)
 
 typedef void (*sep_init_fn)(uint8_t*, int, char);
 typedef void (*activate_fn)(int, int);
-typedef void (*aac_enable_fn)(uint8_t);
+typedef void (*aac_enable_fn)(uint8_t);  /* also the aptX HD switch's shape */
 typedef int (*enc_init_fn)(int, int, int, int, int, int, int, int);
 typedef void (*enc_deinit_fn)(int);
 typedef void (*send_pcm_fn)(void*, unsigned);
@@ -104,6 +113,7 @@ static struct {
     sep_init_fn sep_init;
     activate_fn activate;
     aac_enable_fn aac_enable;
+    aac_enable_fn aptxhd_enable;
     enc_init_fn enc_init;
     enc_deinit_fn enc_deinit;
     send_pcm_fn send_pcm;
@@ -116,6 +126,25 @@ static struct {
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static int g_on;             /* AAC wanted and every symbol found */
 static int g_xq;             /* SBC XQ wanted */
+static int g_slot;           /* what holds aptX HD's slot: 0 not built yet, 'a' AAC, 'h' aptX HD */
+
+static void publish(int aac, int xq)
+{
+    FILE* f = fopen(kCodecs, "w");
+    if (!f) return;
+    fchmod(fileno(f), 0644);   /* the service's umask is 077 */
+    if (aac) fputs("aac\n", f);
+    if (xq) fputs("sbc-xq\n", f);
+    if (aac && g_slot) fputs(g_slot == 'a' ? "slot aac\n" : "slot aptxhd\n", f);
+    fclose(f);
+}
+
+/* From the switches at load, so the screen is right before Bluetooth first starts; resolve()
+ * corrects it once the symbols are checked. */
+__attribute__((constructor)) static void at_load(void)
+{
+    publish(access(kOn, F_OK) == 0, access(kXq, F_OK) == 0);
+}
 
 static void* sym(void* lib, const char* name)
 {
@@ -133,6 +162,7 @@ static void resolve(void)
     real.sep_init = (sep_init_fn)sym(ba, "btmtk_a2dp_sep_default_setting_initialized");
     real.activate = (activate_fn)sym(ba, "btmtk_a2dp_send_activate_req");
     real.aac_enable = (aac_enable_fn)sym(ba, "btmtk_a2dp_send_aac_enable_req");
+    real.aptxhd_enable = (aac_enable_fn)sym(ba, "btmtk_a2dp_send_aptxHD_enable_req");
     real.enc_init = (enc_init_fn)sym(ba, "btmtk_a2dp_stream_data_encoder_init");
     real.enc_deinit = (enc_deinit_fn)sym(ba, "btmtk_a2dp_stream_data_encoder_deinit");
     real.send_pcm = (send_pcm_fn)sym(ba, "btmtk_a2dp_send_audio_stream_data");
@@ -140,13 +170,14 @@ static void resolve(void)
     real.callbacks = (void**)sym(ba, "bt_av_callbacks");
     real.app = (uint8_t*)sym(ba, "bt_a2dp_app");
     real.is_src = (is_src_fn)sym(mw, "btmwAvBothIsSrc");
-    int all = real.sep_init && real.activate && real.aac_enable && real.enc_init &&
+    int all = real.sep_init && real.activate && real.aac_enable && real.aptxhd_enable && real.enc_init &&
               real.enc_deinit && real.send_pcm && real.send_frame && real.callbacks && real.app &&
               real.is_src;
     g_on = all && access(kOn, F_OK) == 0;
     g_xq = all && access(kXq, F_OK) == 0;
     logf_("loaded: symbols %s, AAC %s, SBC XQ %s", all ? "ok" : "MISSING", g_on ? "on" : "off",
           g_xq ? "on" : "off");
+    publish(g_on, g_xq);
 }
 
 static void init(void) { pthread_once(&g_once, resolve); }
@@ -167,6 +198,12 @@ EXPORT void btmtk_a2dp_sep_default_setting_initialized(uint8_t* seps, int n, cha
         logf_("SBC endpoint is now XQ: Dual Channel, bitpool %d..%d", sbc[SBC_MIN_BP], SBC_XQ_BITPOOL);
     }
     if (!g_on || n <= SEP_SLOT_APTX_HD) return;
+    g_slot = access(kHd, F_OK) == 0 ? 'h' : 'a';
+    publish(g_on, g_xq);
+    if (g_slot == 'h') {
+        logf_("source endpoint %d stays aptX HD (aptX HD is the choice)", SEP_SLOT_APTX_HD);
+        return;
+    }
     uint8_t* e = seps + SEP_SLOT_APTX_HD * SEP_SIZE;
     memset(e, 0, SEP_SIZE);
     e[0] = CODEC_AAC;
@@ -182,10 +219,34 @@ EXPORT void btmtk_a2dp_sep_default_setting_initialized(uint8_t* seps, int n, cha
 
 /* ---- 2. mtkbt's AAC switch ----------------------------------------------------------------- */
 
+static int g_aac_tx = 1;     /* transmit AAC wanted: Sony's aptX HD switch, last set */
+static uint8_t g_aac_rx = 1; /* the receiver's AAC setting, last set */
+
+/* Transmitting, the switch follows the codec choice; receiving, the receiver's own setting. */
+static void aac_switch(void)
+{
+    real.aac_enable(real.is_src() && g_slot == 'a' ? (uint8_t)g_aac_tx : g_aac_rx);
+}
+
 EXPORT void btmtk_a2dp_send_aac_enable_req(uint8_t on)
 {
     init();
-    if (real.aac_enable) real.aac_enable(g_on ? 1 : on);
+    if (!g_on) {
+        if (real.aac_enable) real.aac_enable(on);
+        return;
+    }
+    g_aac_rx = on;
+    aac_switch();
+}
+
+EXPORT void btmtk_a2dp_send_aptxHD_enable_req(uint8_t on)
+{
+    init();
+    if (real.aptxhd_enable) real.aptxhd_enable(on);
+    if (!g_on) return;
+    g_aac_tx = on != 0;
+    if (g_slot == 'a') logf_("transmit AAC %s (Sony's aptX HD switch)", on ? "on" : "off");
+    aac_switch();
 }
 
 static void swap_callbacks(void);
@@ -194,7 +255,7 @@ EXPORT void btmtk_a2dp_send_activate_req(int a, int b)
 {
     init();
     if (real.activate) real.activate(a, b);
-    if (g_on) real.aac_enable(1);
+    if (g_on) aac_switch();
     if (g_on || g_xq) swap_callbacks();
 }
 
@@ -219,7 +280,10 @@ static cfg_cb_fn g_cfg_cb;   /* libBtMw's own codec-config callback (slot 4) */
 static void status(const char* s)
 {
     FILE* f = fopen(kStatus, "w");
-    if (f) { fputs(s, f); fclose(f); }
+    if (!f) return;
+    fchmod(fileno(f), 0644);
+    fputs(s, f);
+    fclose(f);
 }
 
 static void on_codec_config(void* addr, uint8_t* cfg)
@@ -236,6 +300,9 @@ static void on_codec_config(void* addr, uint8_t* cfg)
         pthread_mutex_unlock(&g.lock);
         logf_("link is AAC: freq 0x%x -> %d Hz, max %u bit/s, channels 0x%x", freq, rate, max,
               cfg[AAC_CHAN]);
+        char s[32];
+        snprintf(s, sizeof s, "AAC %d\n", rate);
+        status(s);
         if (rate) {
             /* The same link as SBC would describe it, so libBtMw starts "SBC" at the right rate:
              * bitpool 2..53, 16 blocks, 8 subbands, loudness, joint stereo. */
@@ -251,6 +318,7 @@ static void on_codec_config(void* addr, uint8_t* cfg)
         pthread_mutex_lock(&g.lock);
         g.cfg_rate = 0;
         pthread_mutex_unlock(&g.lock);
+        status("");
     }
     g_cfg_cb(addr, cfg);
 }
@@ -316,7 +384,9 @@ EXPORT void btmtk_a2dp_stream_data_encoder_deinit(int x)
               g.frames, g.dropped, g.failed, g.waits, aac_enc_bitrate(g.enc));
         aac_enc_close(g.enc);
         g.enc = NULL;
-        status("");
+        char s[32];
+        snprintf(s, sizeof s, g.cfg_rate ? "AAC %d\n" : "", g.cfg_rate);
+        status(s);
     }
     pthread_mutex_unlock(&g.lock);
     if (!ours && real.enc_deinit) real.enc_deinit(x);

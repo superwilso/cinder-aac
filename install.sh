@@ -24,7 +24,7 @@ case "${1:-}" in
 xq)     dev 'touch /data/cinder/bt_sbc_xq && chmod 644 /data/cinder/bt_sbc_xq && echo "SBC XQ on from the next reboot"'; exit ;;
 xq-off) dev 'rm /data/cinder/bt_sbc_xq 2>/dev/null; echo "SBC XQ off from the next reboot"'; exit ;;
 off)    dev 'rm /data/cinder/bt_aac 2>/dev/null; echo "AAC off from the next reboot"'; exit ;;
-remove) dev "mount -o remount,rw /system && rm $DST; rm $FDKDST 2>/dev/null; sync; mount -o remount,ro /system; rm /data/cinder/bt_aac /data/cinder/bt_sbc_xq 2>/dev/null; echo removed"; exit ;;
+remove) dev "mount -o remount,rw /system && rm $DST; rm $FDKDST 2>/dev/null; sync; mount -o remount,ro /system; rm /data/cinder/bt_aac /data/cinder/bt_sbc_xq /data/cinder/bt_aptxhd 2>/dev/null; echo removed"; exit ;;
 "")     echo "usage: install.sh <cinder-hagowrap> | off | remove"; exit 2 ;;
 esac
 

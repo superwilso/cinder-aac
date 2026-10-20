@@ -40,8 +40,9 @@ with `BIND_NOW`), so an `LD_PRELOAD` in front of the service process stands in f
 
 | hook | does |
 |---|---|
-| `btmtk_a2dp_sep_default_setting_initialized` | after blueangel fills the source list, replaces entry 2 (aptX HD) with AAC-LC, 44.1/48 kHz, stereo, up to 320 kbit/s |
-| `btmtk_a2dp_send_aac_enable_req` / `btmtk_a2dp_send_activate_req` | keeps mtkbt's AAC switch on |
+| `btmtk_a2dp_sep_default_setting_initialized` | after blueangel fills the source list, replaces entry 2 (aptX HD) with AAC-LC, 44.1/48 kHz, stereo, up to 320 kbit/s, unless `/data/cinder/bt_aptxhd` says aptX HD is the choice. blueangel rebuilds the list in every `btmtk_a2dp_send_activate_req` (each Bluetooth start) and sends mtkbt a fresh copy, so the slot can change between starts |
+| `btmtk_a2dp_send_aptxHD_enable_req` | while AAC holds the slot, Sony's aptX HD switch is the AAC switch (AAC has no transmit switch of its own), so Cinder's codec choice turns AAC on and off live |
+| `btmtk_a2dp_send_aac_enable_req` / `btmtk_a2dp_send_activate_req` | re-sends that choice whenever the stack sets the switch; receiving keeps the receiver's own AAC setting |
 | the codec-config slot of `bt_av_callbacks` (exported) | when a *source* link comes up AAC, libBtMw is told it is SBC at the same rate, so it runs its SBC path |
 | `btmtk_a2dp_stream_data_encoder_init` / `_deinit` | libBtMw's "SBC" encoder start/stop opens/closes an AAC encoder instead |
 | `btmtk_a2dp_send_audio_stream_data` | libBtMw's PCM, 1024 frames at a time, encoded to LATM (StreamMuxConfig in every frame), paced to real time, handed to `btmtk_a2dp_send_audio_encoded_stream_data` with a timestamp step of 1024 |
@@ -50,13 +51,14 @@ Source vs receiver is told apart with libBtMw's exported `btmwAvBothIsSrc`.
 
 ## Trade-offs
 
-- **aptX HD is gone while AAC is on.** Headphones with aptX HD fall back to aptX (they all have
-  it), so only the HD upgrade is lost.
-- **The receiver's AAC switch is held on** too while AAC transmit is on.
-- **Sony's own status reports SBC** for an AAC link; `/tmp/cinder_aac_status` has the truth
-  (`AAC <rate> <bitrate>`).
-- **Priority** stays mtkbt's: LDAC > aptX > AAC > SBC. Headphones with LDAC or aptX still get
-  those unless Cinder's codec choice switches them off.
+- **AAC and aptX HD take turns.** mtkbt holds four source endpoints, so the two share one;
+  Cinder writes `/data/cinder/bt_aptxhd` when aptX HD is the choice and restarts Bluetooth when
+  the slot holds the other one.
+- **AAC rides Sony's aptX HD switch.** Picking AAC in Cinder calls `SetAptxHD(true)`; any other
+  choice turns it off, so headphones without the chosen codec fall back to SBC, as they do for
+  aptX and LDAC.
+- **Sony's own status reports SBC** for an AAC link; `/tmp/cinder_aac_status` has the truth, and
+  Cinder's Bluetooth screen reads it.
 
 ## Files on the player
 
@@ -64,8 +66,12 @@ Source vs receiver is told apart with libBtMw's exported `btmwAvBothIsSrc`.
 |---|---|
 | `/system/vendor/unknown321/lib/preload/BtCommonService.so` | this library; Cinder's hagodaemon wrapper preloads any `preload/<Service>.so` into that service |
 | `/data/cinder/bt_aac` | present = AAC on (read when the service starts) |
+| `/data/cinder/bt_sbc_xq` | present = SBC XQ on (read when the service starts) |
+| `/data/cinder/bt_aptxhd` | present = the shared slot stays aptX HD (read at each Bluetooth start; Cinder writes it) |
 | `/tmp/cinder_aac.log` | what the hooks did |
-| `/tmp/cinder_aac_status` | `AAC <rate> <bitrate>` while an AAC link is streaming |
+| `/tmp/cinder_aac_status` | `AAC <rate>` from the moment a link is AAC, `AAC <rate> <bitrate>` while it streams; empty for any other codec |
+| `/tmp/cinder_aac_codecs` | what this boot offers, one a line: `aac`, `sbc-xq`, and after Bluetooth starts `slot aac` or `slot aptxhd` (Cinder reads it) |
+| `/system/vendor/unknown321/lib/libfdk-aac-enc.so` | the fdk-aac 2.x encoder, preferred over the firmware's |
 
 ## Encoder: upstream fdk-aac 2.x preferred
 

@@ -5,8 +5,10 @@ only *sends* SBC, aptX, aptX HD and LDAC. This project adds AAC as a send codec,
 that have none of the others (AirPods, Beats, most budget pairs) and would otherwise fall back
 to SBC.
 
-It is kept apart from [Cinder](https://github.com/superwilso) on purpose: it touches Sony's
-Bluetooth stack, so it lives in a repo of its own that Cinder does not depend on.
+It is kept apart from [Cinder](https://github.com/superwilso/Cinder) on purpose: it touches Sony's
+Bluetooth stack, so it lives in a repo of its own. Cinder includes it as a git submodule and
+installs it as the optional `bt-aac` component; a Cinder build without it simply leaves that
+component out.
 
 ## How it works
 
@@ -29,4 +31,8 @@ US 17 U.S.C. 1201(f)).
 
 ## Status
 
-Research. Nothing here is safe to install yet.
+Works on the owner's player (stock 1.02 / Walkman One 3.02). AAC is added alongside Sony's four
+(it shares a slot with aptX HD, swapped at each Bluetooth start). Install it through Cinder's
+installer (Bluetooth: send AAC), or by hand with `./install.sh` for development. Also here: SBC XQ
+(Dual Channel at bitpool 47, about 550 kbit/s), and fdk-aac 2.x as the encoder
+(`build_fdk.sh`), which caps each frame to fit one packet. Details: [docs/STACK.md](docs/STACK.md).

@@ -2,14 +2,15 @@
 # Builds fdk-aac's encoder (third_party/fdk-aac-<ver>, the upstream source, not committed) as
 # build/libfdk-aac-enc.so for the player's glibc 2.23. aac_enc.c prefers it over the firmware's
 # older encoder: same C interface, and it can cap single frames (AACENC_PEAK_BITRATE).
-#   fetch first: mkdir -p third_party && curl -sL \
-#     https://github.com/mstorsjo/fdk-aac/archive/refs/tags/v2.0.3.tar.gz | tar xz -C third_party
+# The source is fetched on the first run.
 set -eu
 cd "$(dirname "$0")"
 : "${DEVSYS:=$HOME/toolchains/xenial-armhf-sysroot/sysroot}"
 : "${RAMLIB:=$HOME/sony/analysis/ramdisk/lib}"
 SRC=third_party/fdk-aac-2.0.3
 CXX=arm-linux-gnueabihf-g++
+[ -f $SRC/Makefile.am ] || { mkdir -p third_party && curl -fsSL \
+    https://github.com/mstorsjo/fdk-aac/archive/refs/tags/v2.0.3.tar.gz | tar xz -C third_party; }
 L=$DEVSYS/usr/lib/arm-linux-gnueabihf
 # The encoder half of upstream's Makefile.am source lists.
 files=$(awk '/^(AACENC|FDK|MPEGTPENC|PCMUTILS|SACENC|SBRENC|SYS)_SRC =/{on=1; next}
