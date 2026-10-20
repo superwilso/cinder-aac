@@ -1,8 +1,9 @@
 /* aac_enc.h — AAC-LC frames for A2DP, from the Fraunhofer encoder already on the player.
  *
  * The declarations below are the encoder's public C interface (aacEncOpen / aacEncoder_SetParam /
- * aacEncEncode / aacEncClose), the one libFraunhoferAAC.so exports. Only what this project calls is
- * declared. The library itself is never shipped: it is the copy Sony installed on the player.
+ * aacEncEncode / aacEncClose), the one both libFraunhoferAAC.so and upstream fdk-aac export. Only
+ * what this project calls is declared. The firmware's copy is never shipped; Cinder's own build of
+ * upstream fdk-aac 2.x (build_fdk.sh) is preferred when installed.
  */
 #ifndef CINDER_AAC_ENC_H
 #define CINDER_AAC_ENC_H
@@ -34,6 +35,9 @@ int aac_enc_fit(struct aac_enc* e, const int16_t* pcm, uint8_t* out, int out_cap
 int aac_enc_bitrate(const struct aac_enc* e);
 
 void aac_enc_close(struct aac_enc* e);
+
+/* The encoder library in use (its dlopen name), NULL until one has loaded. */
+extern const char* aac_enc_lib;
 
 /* Whether the last aac_enc_open could cap single frames at the average (AACENC_PEAK_BITRATE). */
 extern int aac_enc_peak_capped;

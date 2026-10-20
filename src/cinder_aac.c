@@ -23,6 +23,12 @@
  *
  * Off unless /data/cinder/bt_aac exists when the service starts. With the file absent every hook
  * is a straight pass-through.
+ *
+ * SBC XQ, separately, with /data/cinder/bt_sbc_xq: the SBC endpoint offers Dual Channel only, at
+ * up to bitpool 47. mtkbt takes the first channel mode both sides share (joint stereo first), so
+ * offering only Dual Channel is what makes it pick it, and in Dual Channel the bitpool counts per
+ * channel: about 550 kbit/s at 44.1 kHz where joint stereo at 53 gives 328. Every A2DP sink must
+ * accept Dual Channel; one that does not would fail to connect over SBC, so it stays opt-in.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -42,6 +48,7 @@
 #define CINDER_AAC_DIR "/data/cinder"
 #endif
 static const char kOn[] = CINDER_AAC_DIR "/bt_aac";
+static const char kXq[] = CINDER_AAC_DIR "/bt_sbc_xq";
 static const char kLog[] = "/tmp/cinder_aac.log";
 static const char kStatus[] = "/tmp/cinder_aac_status";
 
@@ -53,6 +60,9 @@ enum { SEP_SIZE = 0x14, SEP_SLOT_APTX_HD = 2, CODEC_SBC = 1, CODEC_AAC = 3 };
 enum { AAC_OBJ = 4, AAC_FREQ = 6, AAC_CHAN = 8, AAC_VBR = 9, AAC_RATE = 0xc };
 enum { AAC_OBJ_MPEG2_LC = 0x80, AAC_F44 = 0x10, AAC_F48 = 0x08, AAC_STEREO = 1 };
 enum { AAC_MAX_BITRATE = 320000 };
+/* SBC entry fields: bitpool range, then channel modes (joint 1, stereo 2, dual 4, mono 8). */
+enum { SEP_SLOT_SBC = 0, SBC_MIN_BP = 4, SBC_MAX_BP = 5, SBC_BLOCKS = 6, SBC_MODE = 10 };
+enum { SBC_DUAL = 4, SBC_XQ_BITPOOL = 47 };
 
 /* ---- log: one file, throttled at the print ------------------------------------------------ */
 
@@ -105,6 +115,7 @@ static struct {
 
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 static int g_on;             /* AAC wanted and every symbol found */
+static int g_xq;             /* SBC XQ wanted */
 
 static void* sym(void* lib, const char* name)
 {
@@ -133,7 +144,9 @@ static void resolve(void)
               real.enc_deinit && real.send_pcm && real.send_frame && real.callbacks && real.app &&
               real.is_src;
     g_on = all && access(kOn, F_OK) == 0;
-    logf_("loaded: symbols %s, AAC %s", all ? "ok" : "MISSING", g_on ? "on" : "off");
+    g_xq = all && access(kXq, F_OK) == 0;
+    logf_("loaded: symbols %s, AAC %s, SBC XQ %s", all ? "ok" : "MISSING", g_on ? "on" : "off",
+          g_xq ? "on" : "off");
 }
 
 static void init(void) { pthread_once(&g_once, resolve); }
@@ -144,7 +157,16 @@ EXPORT void btmtk_a2dp_sep_default_setting_initialized(uint8_t* seps, int n, cha
 {
     init();
     if (real.sep_init) real.sep_init(seps, n, sink);
-    if (!g_on || sink || n <= SEP_SLOT_APTX_HD) return;
+    if (sink) return;
+    uint8_t* sbc = seps + SEP_SLOT_SBC * SEP_SIZE;
+    if (g_xq && n > SEP_SLOT_SBC && sbc[0] == CODEC_SBC) {
+        logf_("SBC endpoint was: bitpool %d..%d, modes 0x%x", sbc[SBC_MIN_BP], sbc[SBC_MAX_BP],
+              sbc[SBC_MODE]);
+        sbc[SBC_MODE] = SBC_DUAL;
+        sbc[SBC_MAX_BP] = SBC_XQ_BITPOOL;
+        logf_("SBC endpoint is now XQ: Dual Channel, bitpool %d..%d", sbc[SBC_MIN_BP], SBC_XQ_BITPOOL);
+    }
+    if (!g_on || n <= SEP_SLOT_APTX_HD) return;
     uint8_t* e = seps + SEP_SLOT_APTX_HD * SEP_SIZE;
     memset(e, 0, SEP_SIZE);
     e[0] = CODEC_AAC;
@@ -172,9 +194,8 @@ EXPORT void btmtk_a2dp_send_activate_req(int a, int b)
 {
     init();
     if (real.activate) real.activate(a, b);
-    if (!g_on) return;
-    real.aac_enable(1);
-    swap_callbacks();
+    if (g_on) real.aac_enable(1);
+    if (g_on || g_xq) swap_callbacks();
 }
 
 /* ---- 3. what libBtMw is told -------------------------------------------------------------- */
@@ -223,6 +244,10 @@ static void on_codec_config(void* addr, uint8_t* cfg)
             return;
         }
     } else if (cfg) {
+        if (cfg[0] == CODEC_SBC)
+            logf_("link is SBC: bitpool %d..%d, blocks/subbands/alloc %d/%d/%d, freq %d, mode %d",
+                  cfg[SBC_MIN_BP], cfg[SBC_MAX_BP], cfg[SBC_BLOCKS], cfg[SBC_BLOCKS + 1],
+                  cfg[SBC_BLOCKS + 2], cfg[SBC_BLOCKS + 3], cfg[SBC_MODE]);
         pthread_mutex_lock(&g.lock);
         g.cfg_rate = 0;
         pthread_mutex_unlock(&g.lock);
@@ -265,8 +290,9 @@ EXPORT int btmtk_a2dp_stream_data_encoder_init(int codec, int a, int b, int c, i
         g.fill = 0;
         g.frames = g.dropped = g.failed = g.waits = 0;
         g.t0.tv_sec = 0;
-        logf_("encoder start: %d Hz, %d bit/s, payload %d (mtu arg %d, limit %d): %s", g.cfg_rate,
-              br, g.payload, mtu, lim, g.enc ? "ok" : why);
+        logf_("encoder start: %d Hz, %d bit/s, payload %d (mtu arg %d, limit %d): %s (%s, peak cap %d)",
+              g.cfg_rate, br, g.payload, mtu, lim, g.enc ? "ok" : why,
+              aac_enc_lib ? aac_enc_lib : "-", aac_enc_peak_capped);
         char s[96];
         snprintf(s, sizeof s, "AAC %d %d\n", g.cfg_rate, br);
         status(g.enc ? s : "AAC failed\n");
@@ -274,6 +300,9 @@ EXPORT int btmtk_a2dp_stream_data_encoder_init(int codec, int a, int b, int c, i
     int ours = want && g.enc;
     pthread_mutex_unlock(&g.lock);
     if (ours) return 0;
+    if (g_xq && codec == CODEC_SBC)
+        logf_("SBC encoder start: args %d %d %d %d, rate %d, mode %d, mtu %d", a, b, c, d, rate,
+              mode, mtu);
     return real.enc_init ? real.enc_init(codec, a, b, c, d, rate, mode, mtu) : -1;
 }
 

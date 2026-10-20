@@ -35,10 +35,19 @@ static struct {
     int (*close)(HANDLE_AACENCODER* h);
 } fdk;
 
+const char* aac_enc_lib;
+
+/* Cinder's build of upstream fdk-aac 2.x first (build_fdk.sh; it can cap single frames), then the
+ * firmware's own older encoder. The bare name is for tests, which find it on LD_LIBRARY_PATH. */
+static const char* const libs[] = {"/system/vendor/unknown321/lib/libfdk-aac-enc.so",
+                                   "libfdk-aac-enc.so", "libFraunhoferAAC.so"};
+
 static int load(void)
 {
     if (fdk.close) return 1;
-    void* lib = dlopen("libFraunhoferAAC.so", RTLD_NOW | RTLD_LOCAL);
+    void* lib = NULL;
+    for (unsigned i = 0; !lib && i < sizeof libs / sizeof *libs; i++)
+        if ((lib = dlopen(libs[i], RTLD_NOW | RTLD_LOCAL))) aac_enc_lib = libs[i];
     if (!lib) return 0;
     fdk.open = dlsym(lib, "aacEncOpen");
     fdk.set = dlsym(lib, "aacEncoder_SetParam");
@@ -76,7 +85,7 @@ struct aac_enc* aac_enc_open(int rate, int bitrate, int transmux, const char** w
     struct aac_enc* e = calloc(1, sizeof *e);
     const char* w = "out of memory";
     if (!e) goto fail;
-    w = "libFraunhoferAAC.so not loadable";
+    w = "no AAC encoder library loadable";
     if (!load()) goto fail;
     w = "aacEncOpen";
     if (fdk.open(&e->h, 0, 2) != 0) goto fail;
@@ -147,9 +156,12 @@ int aac_bitrate_for(int payload, int rate, int cap)
      * content-protection byte; then 10% for frame-to-frame variation. */
     long long room = payload - 16;
     if (room < 64) room = 64;
-    /* 70%: this encoder build cannot cap single frames (no AACENC_PEAK_BITRATE), and with its
-     * bit reservoir a burst after a quiet passage reaches ~1.45x the average (test/enc_test.c). */
-    long long br = room * 8 * rate / AAC_FRAME_SAMPLES * 7 / 10;
+    /* 70% for the firmware's encoder: it cannot cap single frames (no AACENC_PEAK_BITRATE), and
+     * with its bit reservoir a burst after a quiet passage reaches ~1.45x the average
+     * (test/enc_test.c). fdk-aac 2.x caps them, so 90% leaves only rounding room. */
+    load();
+    int pct = aac_enc_lib && aac_enc_lib != libs[2] ? 90 : 70;
+    long long br = room * 8 * rate / AAC_FRAME_SAMPLES * pct / 100;
     if (cap > 0 && br > cap) br = cap;
     return (int)br;
 }

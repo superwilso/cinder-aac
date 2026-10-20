@@ -50,8 +50,8 @@ int main(int argc, char** argv)
         }
         int end_br = aac_enc_bitrate(e);
         aac_enc_close(e);
-        printf("%s: rate %d bitrate %d->%d frames %d avg-frame %ld max-frame %d lost %ld (second half %ld) peak-cap %s\n",
-               pass ? "latm" : "loas", rate, br, end_br, frames, total / frames, max, lost, late,
+        printf("%s [%s]: rate %d bitrate %d->%d frames %d avg-frame %ld max-frame %d lost %ld (second half %ld) peak-cap %s\n",
+               pass ? "latm" : "loas", aac_enc_lib, rate, br, end_br, frames, total / frames, max, lost, late,
                aac_enc_peak_capped ? "yes" : "NO");
         /* Worst-case bursts: a few frames may go while the bitrate steps down, none once it has. */
         if (pass && (late > 0 || lost > 6)) {
