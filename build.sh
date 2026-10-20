@@ -34,7 +34,7 @@ if [ "${1:-}" = test ]; then
     # and the rootfs as /system (the encoder and its C++ runtime).
     QROOT=build/qroot; mkdir -p $QROOT
     ln -sfn "$RAMLIB" $QROOT/lib; ln -sfn "$FW" $QROOT/system
-    for r in "44100 668" "48000 1005" "44100 1005"; do
+    for r in "44100 668" "48000 1005" "44100 1005" "44100 882"; do
         set -- $r
         qemu-arm-static -L "$QROOT" -E LD_LIBRARY_PATH=/lib:/system/lib:/system/usr/lib build/enc_test "build/t$1.loas" "$1" "$2"
     done

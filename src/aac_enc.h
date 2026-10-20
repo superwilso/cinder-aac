@@ -25,7 +25,18 @@ struct aac_enc* aac_enc_open(int rate, int bitrate, int transmux, const char** w
  * Returns the bytes written (0 while the encoder is still filling its delay line), or -1. */
 int aac_enc_frame(struct aac_enc* e, const int16_t* pcm, uint8_t* out, int out_cap);
 
+/* aac_enc_frame for a packet that holds at most `fit` bytes. A frame that would not fit is
+ * returned as -2 (and is lost), and the encoder's bitrate steps down 10% for the frames after it,
+ * not below 96 kbit/s: this encoder build has no way to cap a single frame. */
+int aac_enc_fit(struct aac_enc* e, const int16_t* pcm, uint8_t* out, int out_cap, int fit);
+
+/* The bitrate the encoder is running at now. */
+int aac_enc_bitrate(const struct aac_enc* e);
+
 void aac_enc_close(struct aac_enc* e);
+
+/* Whether the last aac_enc_open could cap single frames at the average (AACENC_PEAK_BITRATE). */
+extern int aac_enc_peak_capped;
 
 /* The bitrate that keeps every frame inside one A2DP packet of `payload` bytes at `rate` Hz,
  * capped at `cap` (0 = no cap). Leaves room for the LATM mux config and a content-protection

@@ -64,8 +64,11 @@ enum {
     OUT_BITSTREAM_DATA = 3,
 };
 
+int aac_enc_peak_capped;
+
 struct aac_enc {
     HANDLE_AACENCODER h;
+    int bitrate;
 };
 
 struct aac_enc* aac_enc_open(int rate, int bitrate, int transmux, const char** why)
@@ -90,7 +93,8 @@ struct aac_enc* aac_enc_open(int rate, int bitrate, int transmux, const char** w
     /* Caps any one frame at the average, so the bit reservoir cannot grow a frame past the
      * packet. Older encoder releases do not know the parameter; then the margin in
      * aac_bitrate_for is all there is. */
-    (void)fdk.set(e->h, AACENC_PEAK_BITRATE, (unsigned)bitrate);
+    aac_enc_peak_capped = fdk.set(e->h, AACENC_PEAK_BITRATE, (unsigned)bitrate) == 0;
+    e->bitrate = bitrate;
     w = "encoder initialisation";
     if (fdk.encode(e->h, NULL, NULL, NULL, NULL) != 0) goto fail;
     return e;
@@ -114,6 +118,22 @@ int aac_enc_frame(struct aac_enc* e, const int16_t* pcm, uint8_t* out, int out_c
     return oa.numOutBytes;
 }
 
+int aac_enc_fit(struct aac_enc* e, const int16_t* pcm, uint8_t* out, int out_cap, int fit)
+{
+    enum { FLOOR = 96000 };
+    int n = aac_enc_frame(e, pcm, out, out_cap);
+    if (n <= fit) return n;
+    /* Too big for the packet: this frame is lost, so the next ones get 10% less. */
+    if (e->bitrate > FLOOR) {
+        int br = e->bitrate * 9 / 10;
+        if (br < FLOOR) br = FLOOR;
+        if (fdk.set(e->h, AACENC_BITRATE, (unsigned)br) == 0) e->bitrate = br;
+    }
+    return -2;
+}
+
+int aac_enc_bitrate(const struct aac_enc* e) { return e->bitrate; }
+
 void aac_enc_close(struct aac_enc* e)
 {
     if (!e) return;
@@ -127,7 +147,9 @@ int aac_bitrate_for(int payload, int rate, int cap)
      * content-protection byte; then 10% for frame-to-frame variation. */
     long long room = payload - 16;
     if (room < 64) room = 64;
-    long long br = room * 8 * rate / AAC_FRAME_SAMPLES * 9 / 10;
+    /* 70%: this encoder build cannot cap single frames (no AACENC_PEAK_BITRATE), and with its
+     * bit reservoir a burst after a quiet passage reaches ~1.45x the average (test/enc_test.c). */
+    long long br = room * 8 * rate / AAC_FRAME_SAMPLES * 7 / 10;
     if (cap > 0 && br > cap) br = cap;
     return (int)br;
 }

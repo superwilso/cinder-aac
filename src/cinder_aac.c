@@ -283,8 +283,8 @@ EXPORT void btmtk_a2dp_stream_data_encoder_deinit(int x)
     pthread_mutex_lock(&g.lock);
     int ours = g.enc != NULL;
     if (ours) {
-        logf_("encoder stop: %lu frames, %lu too big, %lu failed, %lu waits", g.frames, g.dropped,
-              g.failed, g.waits);
+        logf_("encoder stop: %lu frames, %lu too big, %lu failed, %lu waits, ended at %d bit/s",
+              g.frames, g.dropped, g.failed, g.waits, aac_enc_bitrate(g.enc));
         aac_enc_close(g.enc);
         g.enc = NULL;
         status("");
@@ -338,10 +338,15 @@ EXPORT void btmtk_a2dp_send_audio_stream_data(void* data, unsigned len)
         len -= take;
         if (g.fill < (int)sizeof g.pcm) break;
         g.fill = 0;
-        int n = aac_enc_frame(g.enc, g.pcm, g.out, sizeof g.out);
+        /* One byte of the payload may go to SCMS-T's content-protection header. */
+        int n = aac_enc_fit(g.enc, g.pcm, g.out, sizeof g.out, g.payload - 1);
+        if (n == -2) {
+            LOG_RARE(g.dropped, "frame too big for payload %d: now %d bit/s", g.payload,
+                     aac_enc_bitrate(g.enc));
+            continue;
+        }
         if (n < 0) { LOG_RARE(g.failed, "encode failed"); continue; }
         if (n == 0) continue;
-        if (n > g.payload - 1) { LOG_RARE(g.dropped, "frame %d bytes > payload %d", n, g.payload); continue; }
         pace();
         g.frames++;
         /* mtkbt adds the last argument to the RTP timestamp after each packet: samples. */
