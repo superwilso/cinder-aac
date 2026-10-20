@@ -1,0 +1,8 @@
+# Never commit Sony bytes: binaries, decompiled listings, dumps.
+*.so
+*.bin
+*.img
+decomp/
+dumps/
+# Build output (and the qemu root of symlinks into the firmware).
+build/
