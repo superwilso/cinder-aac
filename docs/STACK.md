@@ -66,3 +66,27 @@ Source vs receiver is told apart with libBtMw's exported `btmwAvBothIsSrc`.
 | `/data/cinder/bt_aac` | present = AAC on (read when the service starts) |
 | `/tmp/cinder_aac.log` | what the hooks did |
 | `/tmp/cinder_aac_status` | `AAC <rate> <bitrate>` while an AAC link is streaming |
+
+## Encoder: upstream fdk-aac 2.x preferred
+
+`build_fdk.sh` builds upstream fdk-aac 2.0.3's encoder (source fetched into `third_party/`, not
+committed) as `libfdk-aac-enc.so`, libc-only, for glibc 2.23. `aac_enc.c` loads it from
+`/system/vendor/unknown321/lib/` first and falls back to the firmware's `libFraunhoferAAC.so`.
+The upstream build accepts `AACENC_PEAK_BITRATE`, so no frame exceeds the average: the bitrate
+can use 90% of the packet room instead of 70% (XM4, 882-byte payload: ~268 kbit/s, was ~188).
+
+## SBC XQ (`/data/cinder/bt_sbc_xq`)
+
+blueangel's source SBC entry (byte 4/5 bitpool min/max, byte 10 channel-mode mask: joint 1,
+stereo 2, dual 4, mono 8) is rewritten to Dual Channel only, max bitpool 47. mtkbt's SBC choice
+takes the first channel mode both sides share (joint first) and max bitpool = the smaller of the
+two maxima, so this yields Dual Channel at up to 47 per channel: ~550 kbit/s at 44.1 kHz.
+
+## Looked at, not done
+
+- **A fifth source endpoint.** mtkbt clamps source endpoints to 4 and its 4 source slots
+  (0x178 bytes each) are followed directly by the receiver's 3; a fifth would overwrite the
+  receiver's first. Moving the arrays means patching every site that indexes them.
+- **A newer LDAC.** The firmware's LDAC core reports 1.0.0, the same as AOSP's open-source
+  libldac; only AOSP's wrapper is newer (2.0.2 vs 1.2.4). The firmware already runs Sony's
+  adaptive bitrate (`ldac_ABR_Proc`); AOSP's adds settable thresholds, not a different method.
