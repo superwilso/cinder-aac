@@ -35,8 +35,10 @@ dev 'BB=/xbin/busybox; [ -x $BB ] || BB=/system/xbin/busybox
 put() { $BB cat "$1" > "$2.tmp" && $BB cmp -s "$1" "$2.tmp" && $BB chown $4 "$2.tmp" && $BB chmod $3 "$2.tmp" && $BB mv "$2.tmp" "$2" && echo "installed $2"; }
 mount -o remount,rw /system || exit 1
 $BB mkdir -p /system/vendor/unknown321/lib/preload
+# The player's shell makes folders 0700; the service runs as uid 100 and must see in.
+$BB chmod 755 /system/vendor/unknown321/lib/preload
 put /data/local/tmp/cinder_aac.so '"$DST"' 644 0:0
 put /data/local/tmp/cinder-hagowrap.new '"$HAGO"' 755 0:2000
 sync; mount -o remount,ro /system
 rm /data/local/tmp/cinder_aac.so /data/local/tmp/cinder-hagowrap.new
-touch /data/cinder/bt_aac && echo "AAC on from the next reboot"'
+touch /data/cinder/bt_aac && chmod 644 /data/cinder/bt_aac && echo "AAC on from the next reboot"'
